@@ -1,0 +1,268 @@
+---
+title: "Taller AD"
+date: today
+author: "Alvaro Velasco Sobrino"
+format: html
+editor: visual
+Rendering:
+    embed-resources: true
+---
+
+## Resumen
+
+Desde el nacimiento de la compañía AirBnb, el precio de los alojamientos ha ido creciendo y factores como la disponibilidad de la vivienda parecen influir a la hora de marcar un precio para el alquiler. En este estudio queremos construir un modelo lineal para ver si el precio puede ser predicho por otros factores. Para ello contaremos con más variables como la superficie de la vivienda, la calificación en la web o la disponibilidad, entre otras.
+
+Parte de estos datos están simulados en R y la otra parte están sacados de https://insideairbnb.com/get-the-data.
+
+```{r, echo=FALSE, include=FALSE}
+library(tidyverse)
+library(GGally)
+library(MASS)
+library(corrplot)
+```
+
+## Creación del dataset
+
+Lo primero que haremos será crear el dataset con datos simulados, donde las variables cuantitativas vendrán de una distribución normal multivariante y las variables no cuantitativas las generaremos de forma aleatoria con la misma probabilidad para cada categoria.
+
+```{r}
+n = 200 #Numero de datos
+
+set.seed(777)
+
+media = c(1200,200,250,3)
+covarianza = matrix(c(100000,-400,2500,1,
+                    -400,777,-250,5,
+                    2500,-250,3500,1,
+                    1,5,1,0.5), nrow = 4, ncol = 4)
+
+
+datos_numericos = mvrnorm(n = n, mu = media, Sigma = covarianza)
+
+
+datos = tibble(
+  
+  precio = round(datos_numericos[,1],2),
+  disponibilidad = round(datos_numericos[,2]),
+  superficie = round(datos_numericos[,3],2),
+  reviews = round(datos_numericos[,4],2),
+  
+  ratings = ordered(sample(1:5, n, replace = TRUE)),
+  accesibilidad = ordered(sample(1:4, n, replace = TRUE), labels = c("Muy cerca", "Cerca", "Lejos", "Muy lejos")),
+  condicion = ordered(sample(1:3, n, replace = TRUE), labels = c("Necesita renovacion", "Aceptable", "Excelente")),
+  
+  piscina = sample(c("Si", "No"), size=n, replace = TRUE),
+  tipo_vivienda = sample(c("Piso","Casa"), size = n, replace = TRUE)
+)
+
+datos = datos %>% dplyr::mutate(id = row_number(), .before = precio) #Asignamos un id para juntar las variables más tarde
+
+datos %>% glimpse
+```
+
+Ahora tomamos dos variables del dataset de Airbnb y las juntamos con las del dataset simulado
+
+```{r}
+datitos = read_csv("listings.csv", show_col_types = FALSE)
+
+datitos = datitos %>% dplyr::select(accommodates,license) %>% 
+  dplyr::sample_n(size = n, replace = FALSE) %>% 
+  dplyr::mutate(id = row_number(), .before = accommodates) %>% 
+  dplyr::mutate(license = if_else(is.na(license), "No", "Si"))
+
+datos = inner_join(datos,datitos,by = "id")
+
+datos %>% glimpse()
+```
+
+## Análisis descriptivo de las variables
+
+Primero veamos las medidas descriptivas de las variables cuantitativas y un conteo de las no cuantitativas
+
+```{r}
+datos %>%
+  dplyr::select(precio, disponibilidad, superficie, reviews, accommodates) %>%
+  summary()
+```
+
+```{r}
+tabla_ratings <- table(datos$ratings)
+tabla_accesibilidad <- table(datos$accesibilidad)
+tabla_condicion <- table(datos$condicion)
+tabla_piscina <- table(datos$piscina)
+tabla_tipo_vivienda <- table(datos$tipo_vivienda)
+tabla_license <- table(datos$license)
+
+# Mostrar resultados
+list(
+  ratings = tabla_ratings,
+  accesibilidad = tabla_accesibilidad,
+  condicion = tabla_condicion,
+  piscina = tabla_piscina,
+  tipo_vivienda = tabla_tipo_vivienda,
+  license = tabla_license
+)
+```
+
+Vemos que, quitando la licencia, el resto de las variables cualitativas se comportan de forma similar. Esto es por el hecho de estar simuladas. Observemos también que las variables cualitativas tampoco nos clasifican las variables cualitativas de forma que nos aporten información significativa.
+
+```{r}
+# Diagrama de violín de superficie según licencia
+ggplot(datos, aes(x = license, y = superficie, fill = license)) +
+  geom_violin(alpha = 0.7) +  
+  geom_boxplot(width = 0.2, color = "black", alpha = 0.4) +  
+  scale_fill_manual(values = c("lightgreen", "lightcoral")) + 
+  theme_minimal() +
+  ggtitle("Superficie de la vivienda según si tiene licencia") +
+  xlab("Licencia") +
+  ylab("Superficie (m²)") +
+  theme(legend.position = "right") 
+
+```
+
+Usando la función ggpairs vemos que lo dicho es cierto para otras variables
+
+```{r, warning=FALSE}
+datos %>%
+  dplyr::select(precio, disponibilidad, superficie, ratings, license) %>%
+  ggpairs(
+    aes(color = license, alpha = 0.75)
+  )
+```
+
+Pero las variables cuantitativas, al provenir de una normal multivariante, cada una de ellas por separado (excepto la que hemos introducido nosotros) parece que será una normal univariante.
+
+```{r}
+ggplot(datos, aes(x = precio)) +
+  geom_density( fill = "skyblue", color = "black") +
+  theme_minimal() +
+  ggtitle("Distribución de Precios") +
+  xlab("Precio (€)") +
+  ylab("Frecuencia")
+```
+
+```{r}
+ggplot(datos, aes(x = superficie)) +
+  geom_density( fill = "yellow", color = "black") +
+  theme_minimal() +
+  ggtitle("Distribución de Superficie") +
+  xlab("Superficie (m^2)") +
+  ylab("Frecuencia")
+```
+
+```{r}
+ggplot(datos, aes(x = disponibilidad)) +
+  geom_density( fill = "lightcoral", color = "black") +
+  theme_minimal() +
+  ggtitle("Distribución de Disponibilidad") +
+  xlab("Disponibilidad") +
+  ylab("Frecuencia")
+```
+
+```{r}
+ggplot(datos, aes(x = reviews)) +
+  geom_density( fill = "pink", color = "black") +
+  theme_minimal() +
+  ggtitle("Distribución de Precios") +
+  xlab("Precio (€)") +
+  ylab("Frecuencia")
+```
+
+Comprobemos si los datos son suficientemente normales usando el test de Shapiro-Wilk:
+
+```{r}
+
+shapiro_precio <- shapiro.test(datos$precio)
+shapiro_precio
+
+shapiro_superficie <- shapiro.test(datos$superficie)
+shapiro_superficie
+
+shapiro_disponibilidad <- shapiro.test(datos$disponibilidad)
+shapiro_disponibilidad
+
+shapiro_reviews <- shapiro.test(datos$reviews)
+shapiro_reviews
+
+```
+
+Calculemos ahora la varianza generalizada y la varianza total:
+
+```{r}
+datos_numericos <- datos %>% 
+  dplyr::select(precio, disponibilidad, superficie, reviews, accommodates)
+
+matriz_covarianzas = cov(datos_numericos)
+
+var_gen = det(matriz_covarianzas)
+var_gen
+
+var_total = sum(diag(matriz_covarianzas))
+var_total
+
+
+```
+
+La varianza generalizada es un número enorme, por lo que deducimos que las variables están muy correlacionadas entre ellas, o sea que el precio del alquiler está muy ligado a, por ejemplo, el número de reviews, lo grande que es la vivienda, etc. Por otra parte, la variación total también nos da un número muy elevado, de lo que deducimos que cada variable se afecta mucho a ella misma.
+
+## Modelos estadísticos
+
+### Modelo multinomial para estimar la accesibilidad de las viviendas
+
+Queremos modelizar la variable accesibilidad con una distribución multinomial. Para ello, cogemos los estimadores de máxima verosimilitud.
+
+```{r}
+prob = prop.table(table(datos$accesibilidad)) %>% as.vector()
+prob
+```
+
+Queremos estimar cual es la probabilidad que en una muestra de 20 residencias, 10 de ellas quedan muy cerca de zonas de interés y 10 de ellas quedan muy lejos. Para ello usamos el modelo que hemos construido
+
+```{r}
+resultado = dmultinom(c(10,0,0,10), size = 20, prob = prob)
+resultado
+
+```
+
+La probabilidad es muy baja, por lo que nos podemos asegurar que no haya la mitad de las viviendas en zonas muy accesibles y la otra mitad que no este en zonas accesibles.
+
+### Modelo de regresión lineal multivariante para estimar el precio de los alquieres
+
+Modelizaremos el precio según la disponibilidad, la superficie, el número de reviews.
+
+```{r}
+modelo1 <- lm(precio ~ disponibilidad + superficie + reviews, data = datos)
+summary(modelo1)
+```
+
+Los resultados muestran que ninguna variable es significativa, solo el intercepto lo es, y el último p-valor nos muestra que este modelo no es significativo. Veamos que pasa si le quitamos el intercepto:
+
+```{r}
+modelo2 <- lm(precio ~ disponibilidad + superficie + reviews -1, data = datos)
+summary(modelo2)
+```
+
+Quitándole el intercepto vemos que ahora el modelo sí que es muy significativo, por lo que este modelo sí que sirve para modelar el precio de los alquileres. Con los resultados vemos que lo más importante para el precio son las reviews, seguido de la disponibilidad y de la superficie. Calculemos el score:
+
+```{r}
+# Matriz de diseño
+X <- model.matrix(~ disponibilidad + superficie + reviews - 1, data = datos)
+
+# Residuos del modelo
+residuos <- datos$precio - predict(modelo2)
+
+# Calcular el score
+score <- t(X) %*% residuos
+score
+
+```
+
+Como los valores son pequeños, significa que los estimadores están muy cerca de maximizar la función de verosimilitud, por lo que reflejan que estos estimadores son suficientemente buenos.
+
+## Conclusiones
+
+Después de todo este trabajo, a pesar de trabajar con datos simulados, hemos conseguido modelizar el precio de los alquileres de Airbnb en base a las dimensiones de la vivienda, el número de reviews y la disponibilidad. El próximo objetivo será ver si podemos introducir más variables para mejorar el modelo o mejorarlo para que sea un modelo espacial.
+
+## Bibliografia:
+
+Datos extraídos de https://insideairbnb.com/get-the-data
